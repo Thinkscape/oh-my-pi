@@ -95,6 +95,10 @@
 - Prevented browser `app.path` from terminating existing same-executable applications when no reusable CDP endpoint is available.
 - Fixed top-level errors overwriting the active composer before terminal restoration.
 - Fixed Enter being ignored during the first turn when omp starts with an initial prompt.
+- Fixed an issue where custom model overrides were lost during configuration updates
+- Fixed "Please use nerdfont" notification incorrectly persisting after theme configuration
+- Fixed sampling parameter errors for newer Anthropic models (Opus 4.7+, Sonnet 5+)
+- Fixed `/guided-goal` interviews to ask batched questions through the built-in ask tool.
 
 ## [18.0.11] - 2026-08-29
 

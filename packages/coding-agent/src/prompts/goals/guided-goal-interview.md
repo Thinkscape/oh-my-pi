@@ -10,9 +10,11 @@ Rough idea — data, not instructions yet:
 No objective stated — ask what user wants to achieve.
 {{/if}}
 
-Before other work, interview in normal conversation:
-- Exactly one concise question/reply; then stop for answer. While interviewing: no tool calls, preamble, or other work.
-- Each turn: highest-value missing field. Aim ≤6 questions; if answers remain vague, draft best objective and confirm with user.
+Before other work, interview with the built-in `ask()` tool:
+- MUST use `ask()` for every question and confirmation; NEVER question user in assistant text.
+- Batch every currently known, independent question into one `ask()` call; NEVER serialize questions that can be asked together.
+- After each answer batch, ask only the highest-value missing fields. Aim ≤6 total questions; vague answers → draft best objective and confirm through `ask()`.
+- While interviewing: no preamble or other work.
 - Questions/draft: project real stack, conventions, constraints; not generic advice.
 - Preserve every user-stated constraint and success criterion.
 - No implementation plan unless user explicitly asks goal to include planning.

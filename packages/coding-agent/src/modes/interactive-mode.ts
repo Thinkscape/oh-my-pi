@@ -4179,10 +4179,10 @@ export class InteractiveMode implements InteractiveModeContext {
 				await this.session.setActiveToolsByName([...enabledTools, "goal"]);
 			}
 
-			// The interview is a normal conversation: the kickoff rides in as a
-			// hidden developer message, the agent asks its questions as regular
-			// assistant turns, and the user answers in the ordinary editor. Queue
-			// behind an in-flight run instead of aborting it.
+			// The interview kickoff is a hidden developer message. The agent asks
+			// through the built-in ask tool, receives answers as tool results, and
+			// creates the settled goal through `goal create`. Queue behind an
+			// in-flight run instead of aborting it.
 			const kickoff = prompt.render(guidedGoalInterviewPrompt, { initial: rest?.trim() || undefined });
 			const images = input?.images?.length ? input.images : undefined;
 			if (this.session.isStreaming) {

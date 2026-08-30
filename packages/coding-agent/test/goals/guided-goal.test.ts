@@ -117,9 +117,11 @@ describe("guided goal setup", () => {
 			expect(promptSpy).toHaveBeenCalledTimes(1);
 			const [text, promptOptions] = promptSpy.mock.calls[0]!;
 			expect(promptOptions).toEqual({ synthetic: true, images });
-			// The rough objective rides inside the kickoff, and the kickoff tells the
-			// agent how to finish: `goal` tool, op create.
+			// The rough objective rides inside the kickoff, which requires batched
+			// questions through the ask tool and finishes through `goal create`.
 			expect(text).toContain("automate flaky test triage");
+			expect(text).toContain("MUST use `ask()` for every question and confirmation");
+			expect(text).toContain("Batch every currently known, independent question into one `ask()` call");
 			expect(text).toContain('op: "create"');
 			// The goal tool is activated up front so the agent can create the goal
 			// once the interview concludes.
