@@ -729,6 +729,8 @@ export class InteractiveMode implements InteractiveModeContext {
 	#headerAfter: readonly Component[] = [];
 	#planModePreviousTools: string[] | undefined;
 	#goalModePreviousTools: string[] | undefined;
+	#guidedGoalInterviewPending = false;
+	#guidedGoalInterviewDispatching = false;
 	#vibeModePreviousTools: string[] | undefined;
 	#vibeModeOwnerScope: VibeOwnerScope | undefined;
 	#vibeScopeSuspendedForSwitch = false;
@@ -1300,6 +1302,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 		// Restore mode from session (e.g. plan mode on resume)
 		this.session.setSessionBeforeSwitchReconciler?.(async () => {
+			await this.#restoreGuidedGoalInterviewTools();
 			await this.#liveCommandController.stop();
 			await this.#quiesceVibeForSessionSwitch();
 		});
@@ -2858,6 +2861,20 @@ export class InteractiveMode implements InteractiveModeContext {
 		};
 	}
 
+	async #restoreGuidedGoalInterviewTools(): Promise<void> {
+		if (!this.#guidedGoalInterviewPending) return;
+		this.#guidedGoalInterviewPending = false;
+		this.#guidedGoalInterviewDispatching = false;
+		const previousTools = this.#goalModePreviousTools;
+		this.#goalModePreviousTools = undefined;
+		if (!previousTools) return;
+		try {
+			await this.session.setActiveToolsByName(previousTools);
+		} catch (error) {
+			logger.warn("Failed to restore tools after guided goal interview", { error: String(error) });
+		}
+	}
+
 	async #handleGoalSessionEvent(event: AgentSessionEvent): Promise<void> {
 		if (event.type === "agent_start") {
 			this.#goalTurnHadToolCalls = false;
@@ -2876,6 +2893,10 @@ export class InteractiveMode implements InteractiveModeContext {
 			return;
 		}
 		if (event.type === "goal_updated") {
+			if (event.state?.enabled) {
+				// Goal exit now owns restoration of the pre-interview tool set.
+				this.#guidedGoalInterviewPending = false;
+			}
 			// Handle drop before clearing goalModeEnabled so #exitGoalMode can
 			// still restore the previous tool set while the flag is true.
 			if (event.state?.goal?.status === "dropped") {
@@ -2892,6 +2913,9 @@ export class InteractiveMode implements InteractiveModeContext {
 		}
 		if (event.type !== "agent_end") {
 			return;
+		}
+		if (event.isTerminal !== false && this.#guidedGoalInterviewPending && !this.#guidedGoalInterviewDispatching) {
+			await this.#restoreGuidedGoalInterviewTools();
 		}
 		if (this.#goalContinuationTurnInFlight) {
 			this.#goalSuppressNextContinuation = !this.#goalTurnHadToolCalls;
@@ -3381,7 +3405,7 @@ export class InteractiveMode implements InteractiveModeContext {
 		reason?: "completed" | "paused" | "dropped";
 	}): Promise<void> {
 		const previousTools = this.#goalModePreviousTools;
-		if (this.goalModeEnabled && previousTools) {
+		if (previousTools) {
 			await this.session.setActiveToolsByName(previousTools);
 		}
 		const currentState = this.session.getGoalModeState();
@@ -4180,6 +4204,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			// toolset first: goal exit must restore whether ask was previously active.
 			const enabledTools = this.session.getEnabledToolNames();
 			this.#goalModePreviousTools = enabledTools.filter(name => name !== "goal");
+			this.#guidedGoalInterviewPending = true;
+			this.#guidedGoalInterviewDispatching = true;
 			if (!enabledTools.includes("ask") || !enabledTools.includes("goal")) {
 				await this.session.setActiveToolsByName([...new Set([...enabledTools, "ask", "goal"])]);
 			}
@@ -4190,18 +4216,32 @@ export class InteractiveMode implements InteractiveModeContext {
 			// in-flight run instead of aborting it.
 			const kickoff = prompt.render(guidedGoalInterviewPrompt, { initial: rest?.trim() || undefined });
 			const images = input?.images?.length ? input.images : undefined;
-			if (this.session.isStreaming) {
+			let queued = this.session.isStreaming;
+			if (queued) {
 				await this.session.followUp(kickoff, images, { synthetic: true });
 			} else {
 				try {
 					await this.session.prompt(kickoff, images ? { synthetic: true, images } : { synthetic: true });
 				} catch (error) {
 					if (!(error instanceof AgentBusyError)) throw error;
+					queued = true;
 					await this.session.followUp(kickoff, images, { synthetic: true });
+				}
+			}
+			this.#guidedGoalInterviewDispatching = false;
+			if (!queued) {
+				if (this.session.getGoalModeState()?.enabled) {
+					// The goal now owns the saved tool set until goal-mode exit.
+					this.#guidedGoalInterviewPending = false;
+				} else {
+					// prompt() has fully settled. No goal means the interview was
+					// aborted, rejected during preflight, or ended without creating one.
+					await this.#restoreGuidedGoalInterviewTools();
 				}
 			}
 			return true;
 		} catch (error) {
+			await this.#restoreGuidedGoalInterviewTools();
 			this.showError(error instanceof Error ? error.message : String(error));
 			return false;
 		}
@@ -4802,6 +4842,7 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
 	async #teardown(): Promise<void> {
+		await this.#restoreGuidedGoalInterviewTools();
 		await this.#liveCommandController.stop();
 
 		this.#btwController.dispose();
