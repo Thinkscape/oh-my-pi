@@ -4169,14 +4169,19 @@ export class InteractiveMode implements InteractiveModeContext {
 				return false;
 			}
 
-			// Expose the goal tool for the interview so the agent can finish by
-			// calling `goal create`. Record the pre-interview toolset first: the
-			// tool-driven create flips goalModeEnabled via `goal_updated`, and the
-			// eventual goal exit restores this set (dropping the goal tool again).
+			// The interview cannot obey its ask-only contract when the tool was
+			// excluded by settings or the session's explicit tool set.
+			if (!this.session.getToolByName("ask")) {
+				this.showWarning("The guided goal interview requires the ask tool, but it is unavailable in this session.");
+				return false;
+			}
+
+			// Expose ask and goal for the interview. Record the pre-interview
+			// toolset first: goal exit must restore whether ask was previously active.
 			const enabledTools = this.session.getEnabledToolNames();
 			this.#goalModePreviousTools = enabledTools.filter(name => name !== "goal");
-			if (!enabledTools.includes("goal")) {
-				await this.session.setActiveToolsByName([...enabledTools, "goal"]);
+			if (!enabledTools.includes("ask") || !enabledTools.includes("goal")) {
+				await this.session.setActiveToolsByName([...new Set([...enabledTools, "ask", "goal"])]);
 			}
 
 			// The interview kickoff is a hidden developer message. The agent asks

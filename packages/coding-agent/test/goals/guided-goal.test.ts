@@ -17,7 +17,7 @@ import { TempDir } from "@oh-my-pi/pi-utils";
 function createToolSession(cwd: string, settings: Settings, overrides: Partial<ToolSession> = {}): ToolSession {
 	return {
 		cwd,
-		hasUI: false,
+		hasUI: true,
 		getSessionFile: () => null,
 		getSessionSpawns: () => "*",
 		settings,
@@ -34,7 +34,7 @@ type GuidedGoalHarness = {
 	cleanup: () => Promise<void>;
 };
 
-async function createHarness(options?: { goalEnabled?: boolean }): Promise<GuidedGoalHarness> {
+async function createHarness(options?: { goalEnabled?: boolean; askEnabled?: boolean }): Promise<GuidedGoalHarness> {
 	resetSettingsForTest();
 	const tempDir = TempDir.createSync("@pi-guided-goal-");
 	await Settings.init({ inMemory: true, cwd: tempDir.path() });
@@ -42,6 +42,7 @@ async function createHarness(options?: { goalEnabled?: boolean }): Promise<Guide
 		"compaction.enabled": false,
 		"goal.enabled": options?.goalEnabled ?? true,
 		"plan.enabled": true,
+		"ask.enabled": options?.askEnabled ?? true,
 	});
 	const authStorage = await AuthStorage.create(path.join(tempDir.path(), "testauth.db"));
 	const modelRegistry = new ModelRegistry(authStorage);
@@ -49,8 +50,9 @@ async function createHarness(options?: { goalEnabled?: boolean }): Promise<Guide
 	if (!model) {
 		throw new Error("Expected claude-sonnet-4-5 to exist in registry");
 	}
-	const initialTools = await createTools(createToolSession(tempDir.path(), settings), ["read"]);
-	const toolRegistry = new Map<string, Tool>(initialTools.map(tool => [tool.name, tool] as const));
+	const availableTools = await createTools(createToolSession(tempDir.path(), settings), ["read", "ask"]);
+	const initialTools = availableTools.filter(tool => tool.name !== "ask");
+	const toolRegistry = new Map<string, Tool>(availableTools.map(tool => [tool.name, tool] as const));
 	const session = new AgentSession({
 		agent: new Agent({
 			initialState: {
@@ -103,9 +105,10 @@ describe("guided goal setup", () => {
 		vi.restoreAllMocks();
 	});
 
-	it("kicks off the interview as a hidden developer prompt and exposes the goal tool", async () => {
+	it("kicks off the interview as a hidden developer prompt and exposes its required tools", async () => {
 		const harness = await createHarness();
 		try {
+			expect(harness.session.getEnabledToolNames()).not.toContain("ask");
 			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
 			const images: ImageContent[] = [{ type: "image", data: "aW1hZ2U=", mimeType: "image/png" }];
 
@@ -117,15 +120,31 @@ describe("guided goal setup", () => {
 			expect(promptSpy).toHaveBeenCalledTimes(1);
 			const [text, promptOptions] = promptSpy.mock.calls[0]!;
 			expect(promptOptions).toEqual({ synthetic: true, images });
-			// The rough objective rides inside the kickoff, which requires batched
-			// questions through the ask tool and finishes through `goal create`.
+			// The rough objective rides inside the kickoff, and the kickoff tells the
+			// agent how to finish through `goal create`.
 			expect(text).toContain("automate flaky test triage");
-			expect(text).toContain("MUST use `ask()` for every question and confirmation");
-			expect(text).toContain("Batch every currently known, independent question into one `ask()` call");
 			expect(text).toContain('op: "create"');
-			// The goal tool is activated up front so the agent can create the goal
-			// once the interview concludes.
-			expect(harness.session.getEnabledToolNames()).toContain("goal");
+			// Both mandatory interview tools are activated before the kickoff.
+			expect(harness.session.getEnabledToolNames()).toEqual(expect.arrayContaining(["ask", "goal"]));
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("refuses to start when the ask tool is unavailable", async () => {
+		const harness = await createHarness({ askEnabled: false });
+		try {
+			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+			const warning = vi.spyOn(harness.mode, "showWarning");
+
+			const started = await harness.mode.handleGuidedGoalCommand("ship it");
+
+			expect(started).toBe(false);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(warning).toHaveBeenCalledWith(
+				"The guided goal interview requires the ask tool, but it is unavailable in this session.",
+			);
+			expect(harness.session.getEnabledToolNames()).not.toContain("goal");
 		} finally {
 			await harness.cleanup();
 		}
