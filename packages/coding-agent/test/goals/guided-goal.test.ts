@@ -35,7 +35,11 @@ type GuidedGoalHarness = {
 	cleanup: () => Promise<void>;
 };
 
-async function createHarness(options?: { goalEnabled?: boolean; askEnabled?: boolean }): Promise<GuidedGoalHarness> {
+async function createHarness(options?: {
+	goalEnabled?: boolean;
+	askEnabled?: boolean;
+	goalAvailable?: boolean;
+}): Promise<GuidedGoalHarness> {
 	resetSettingsForTest();
 	const tempDir = TempDir.createSync("@pi-guided-goal-");
 	await Settings.init({ inMemory: true, cwd: tempDir.path() });
@@ -68,6 +72,7 @@ async function createHarness(options?: { goalEnabled?: boolean; askEnabled?: boo
 		modelRegistry,
 		toolRegistry,
 		rebuildSystemPrompt: async () => ({ systemPrompt: ["Test"] }),
+		ensureGoalRegistered: options?.goalAvailable === false ? async () => false : undefined,
 	});
 	// Mirror sdk.ts assembly: the goal tool is pre-registered (hidden) whenever
 	// goal.enabled, so /guided-goal can activate it by name for the interview.
@@ -76,7 +81,9 @@ async function createHarness(options?: { goalEnabled?: boolean; askEnabled?: boo
 		getGoalRuntime: () => session.goalRuntime,
 	});
 	const goalTool = new GoalTool(goalToolSession);
-	toolRegistry.set("goal", goalTool as unknown as Tool);
+	if (options?.goalAvailable !== false) {
+		toolRegistry.set("goal", goalTool as unknown as Tool);
+	}
 	const mode = new InteractiveMode(session, "test");
 	vi.spyOn(mode, "addMessageToChat").mockReturnValue([]);
 	vi.spyOn(mode, "ensureLoadingAnimation").mockImplementation(() => {});
@@ -167,6 +174,76 @@ describe("guided goal setup", () => {
 		}
 	});
 
+	it("preserves a goal tool that was explicitly enabled before the interview", async () => {
+		const harness = await createHarness();
+		try {
+			await harness.session.setActiveToolsByName([...harness.session.getEnabledToolNames(), "goal"]);
+			const previousTools = harness.session.getEnabledToolNames();
+			vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+
+			expect(await harness.mode.handleGuidedGoalCommand("ship it")).toBe(true);
+
+			expect(previousTools).toContain("goal");
+			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("refuses to reactivate ask after the setting is disabled", async () => {
+		const harness = await createHarness();
+		try {
+			harness.settings.override("ask.enabled", false);
+			const previousTools = harness.session.getEnabledToolNames();
+			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+
+			const started = await harness.mode.handleGuidedGoalCommand("ship it");
+
+			expect(started).toBe(false);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("rolls back when a required tool setting is disabled during activation", async () => {
+		const harness = await createHarness();
+		try {
+			const previousTools = harness.session.getEnabledToolNames();
+			const setActiveTools = harness.session.setActiveToolsByName.bind(harness.session);
+			vi.spyOn(harness.session, "setActiveToolsByName").mockImplementation(async names => {
+				await setActiveTools(names);
+				harness.settings.override("ask.enabled", false);
+			});
+			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+
+			const started = await harness.mode.handleGuidedGoalCommand("ship it");
+
+			expect(started).toBe(false);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("refuses to start when the goal tool cannot be registered", async () => {
+		const harness = await createHarness({ goalAvailable: false });
+		try {
+			const previousTools = harness.session.getEnabledToolNames();
+			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+
+			const started = await harness.mode.handleGuidedGoalCommand("ship it");
+
+			expect(started).toBe(false);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
 	it("asks the agent to elicit the objective when no rough goal is given", async () => {
 		const harness = await createHarness();
 		try {
@@ -185,6 +262,7 @@ describe("guided goal setup", () => {
 	it("queues the kickoff as a synthetic follow-up while the agent is streaming", async () => {
 		const harness = await createHarness();
 		try {
+			await harness.mode.init();
 			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
 			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
 			const followUp = vi.spyOn(harness.session, "followUp").mockResolvedValue();
@@ -194,6 +272,36 @@ describe("guided goal setup", () => {
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(followUp).toHaveBeenCalledTimes(1);
 			expect(followUp.mock.calls[0]?.[2]).toEqual({ synthetic: true });
+			const input = harness.mode.getUserInput();
+			await scheduler.yield();
+			harness.mode.onInputCallback?.(harness.mode.startPendingSubmission({ text: "next turn" }));
+			await input;
+			expect(harness.session.getEnabledToolNames()).toEqual(expect.arrayContaining(["ask", "goal"]));
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("keeps goal-mode cleanup ownership when a queued kickoff creates the goal immediately", async () => {
+		const harness = await createHarness();
+		try {
+			await harness.mode.init();
+			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
+			vi.spyOn(harness.session, "followUp").mockImplementation(async () => {
+				await harness.goalTool.execute("create-call", {
+					op: "create",
+					objective: "Ship the release.",
+				});
+			});
+
+			expect(await harness.mode.handleGuidedGoalCommand("ship it")).toBe(true);
+			expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+
+			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => false });
+			await emitTerminalAgentEnd(harness);
+
+			expect(harness.session.getGoalModeState()?.enabled).toBe(true);
+			expect(harness.session.getEnabledToolNames()).toEqual(expect.arrayContaining(["ask", "goal"]));
 		} finally {
 			await harness.cleanup();
 		}
@@ -241,11 +349,11 @@ describe("guided goal setup", () => {
 		const harness = await createHarness();
 		try {
 			const previousTools = harness.session.getEnabledToolNames();
-			const setActiveTools = harness.session.setActiveToolsByName.bind(harness.session);
+			const setActiveTools = harness.session.setActiveToolPresentation.bind(harness.session);
 			const promptSpy = vi
 				.spyOn(harness.session, "prompt")
 				.mockImplementationOnce(async () => {
-					vi.spyOn(harness.session, "setActiveToolsByName")
+					vi.spyOn(harness.session, "setActiveToolPresentation")
 						.mockRejectedValueOnce(new Error("transient restore failure"))
 						.mockImplementation(setActiveTools);
 					throw new Error("kickoff failed");
@@ -284,7 +392,7 @@ describe("guided goal setup", () => {
 		}
 	});
 
-	it("retries restoration after a transient tool update failure", async () => {
+	it("blocks input until interview restoration recovers", async () => {
 		const harness = await createHarness();
 		try {
 			await harness.mode.init();
@@ -294,18 +402,60 @@ describe("guided goal setup", () => {
 			await harness.mode.handleGuidedGoalCommand("ship it");
 			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => false });
 
-			const setActiveTools = harness.session.setActiveToolsByName.bind(harness.session);
-			vi.spyOn(harness.session, "setActiveToolsByName")
-				.mockRejectedValueOnce(new Error("transient restore failure"))
-				.mockImplementation(setActiveTools);
+			const setActiveTools = harness.session.setActiveToolPresentation.bind(harness.session);
+			const setActiveToolsSpy = vi
+				.spyOn(harness.session, "setActiveToolPresentation")
+				.mockRejectedValue(new Error("persistent restore failure"));
 
 			await emitTerminalAgentEnd(harness);
 			expect(harness.session.getEnabledToolNames()).toEqual(expect.arrayContaining(["ask", "goal"]));
+			await expect(harness.mode.getUserInput()).rejects.toThrow(
+				"Cannot accept input until the guided goal interview restores the previous tool set.",
+			);
 
-			await emitTerminalAgentEnd(harness);
+			setActiveToolsSpy.mockImplementation(setActiveTools);
+			const input = harness.mode.getUserInput();
+			await scheduler.yield();
+			harness.mode.onInputCallback?.(harness.mode.startPendingSubmission({ text: "next turn" }));
+			await input;
 			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
 		} finally {
 			await harness.cleanup();
+		}
+	});
+
+	it("restores pending interview ownership after a session switch rolls back", async () => {
+		const harness = await createHarness();
+		const targetDir = TempDir.createSync("@pi-guided-goal-switch-target-");
+		try {
+			const targetManager = SessionManager.create(targetDir.path(), targetDir.path());
+			targetManager.appendMessage({ role: "user", content: "target", timestamp: 1 });
+			await targetManager.ensureOnDisk();
+			await targetManager.flush();
+			const targetSessionFile = targetManager.getSessionFile();
+			await targetManager.close();
+			expect(targetSessionFile).toBeString();
+
+			await harness.mode.init();
+			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
+			vi.spyOn(harness.session, "followUp").mockResolvedValue();
+			expect(await harness.mode.handleGuidedGoalCommand("ship it")).toBe(true);
+			const interviewTools = harness.session.getEnabledToolNames();
+			const interviewMountedTools = harness.session.getMountedXdevToolNames();
+			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => false });
+
+			expect(
+				await harness.session.switchSession(targetSessionFile!, {
+					onCwdChange: async () => false,
+				}),
+			).toBe(false);
+
+			expect(harness.session.getEnabledToolNames()).toEqual(interviewTools);
+			expect(harness.session.getMountedXdevToolNames()).toEqual(interviewMountedTools);
+			expect(await harness.mode.handleGuidedGoalCommand("second goal")).toBe(false);
+		} finally {
+			await harness.cleanup();
+			await targetDir.remove();
 		}
 	});
 
@@ -357,8 +507,8 @@ describe("guided goal setup", () => {
 			await harness.mode.handleGuidedGoalCommand("ship it");
 			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => false });
 
-			const setActiveTools = harness.session.setActiveToolsByName.bind(harness.session);
-			vi.spyOn(harness.session, "setActiveToolsByName")
+			const setActiveTools = harness.session.setActiveToolPresentation.bind(harness.session);
+			vi.spyOn(harness.session, "setActiveToolPresentation")
 				.mockRejectedValueOnce(new Error("transient restore failure"))
 				.mockImplementation(setActiveTools);
 
@@ -396,9 +546,9 @@ describe("guided goal setup", () => {
 			expect(harness.session.getEnabledToolNames()).toEqual(expect.arrayContaining(["ask", "goal"]));
 
 			await harness.goalTool.execute("complete-call", { op: "complete" });
-			const setActiveTools = harness.session.setActiveToolsByName.bind(harness.session);
+			const setActiveTools = harness.session.setActiveToolPresentation.bind(harness.session);
 			const setActiveToolsSpy = vi
-				.spyOn(harness.session, "setActiveToolsByName")
+				.spyOn(harness.session, "setActiveToolPresentation")
 				.mockRejectedValue(new Error("persistent goal exit failure"));
 			await emitTerminalAgentEnd(harness);
 
@@ -435,7 +585,9 @@ describe("guided goal setup", () => {
 			});
 			await harness.mode.handleGuidedGoalCommand("ship it");
 			await harness.goalTool.execute("complete-call", { op: "complete" });
-			vi.spyOn(harness.session, "setActiveToolsByName").mockRejectedValue(new Error("persistent goal exit failure"));
+			vi.spyOn(harness.session, "setActiveToolPresentation").mockRejectedValue(
+				new Error("persistent goal exit failure"),
+			);
 			await emitTerminalAgentEnd(harness);
 			expect(harness.session.getGoalModeState()?.mode).toBe("exiting");
 

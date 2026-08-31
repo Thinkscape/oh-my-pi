@@ -1872,15 +1872,15 @@ export class AgentSession {
 		this.#planProposalHandler = handler ?? undefined;
 	}
 
-	#sessionBeforeSwitchReconciler: (() => Promise<boolean>) | undefined;
+	#sessionBeforeSwitchReconciler: ((reason: "new" | "resume") => Promise<boolean>) | undefined;
 
-	setSessionBeforeSwitchReconciler(reconciler: (() => Promise<boolean>) | null): void {
+	setSessionBeforeSwitchReconciler(reconciler: ((reason: "new" | "resume") => Promise<boolean>) | null): void {
 		this.#sessionBeforeSwitchReconciler = reconciler ?? undefined;
 	}
 
-	async #reconcileBeforeSessionTransition(): Promise<boolean> {
+	async #reconcileBeforeSessionTransition(reason: "new" | "resume"): Promise<boolean> {
 		try {
-			if ((await this.#sessionBeforeSwitchReconciler?.()) === false) {
+			if ((await this.#sessionBeforeSwitchReconciler?.(reason)) === false) {
 				this.#reconnectToAgent();
 				return false;
 			}
@@ -1891,9 +1891,9 @@ export class AgentSession {
 		}
 	}
 
-	#sessionSwitchReconciler: (() => Promise<void>) | undefined;
+	#sessionSwitchReconciler: ((outcome: "committed" | "rolled-back") => Promise<void>) | undefined;
 
-	setSessionSwitchReconciler(reconciler: (() => Promise<void>) | null): void {
+	setSessionSwitchReconciler(reconciler: ((outcome: "committed" | "rolled-back") => Promise<void>) | null): void {
 		this.#sessionSwitchReconciler = reconciler ?? undefined;
 	}
 
@@ -7297,7 +7297,7 @@ export class AgentSession {
 		this.#disconnectFromAgent();
 		let advisorRecordersDetached = false;
 		await this.abort();
-		if (!(await this.#reconcileBeforeSessionTransition())) return false;
+		if (!(await this.#reconcileBeforeSessionTransition("new"))) return false;
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		await this.#bash.flushPending();
@@ -8396,7 +8396,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
-		if (!(await this.#reconcileBeforeSessionTransition())) return false;
+		if (!(await this.#reconcileBeforeSessionTransition("resume"))) return false;
 
 		await this.#bash.flushPending();
 		// Flush pending writes before switching so restore snapshots reflect committed state.
@@ -8594,7 +8594,7 @@ export class AgentSession {
 			}
 			this.#reconnectToAgent();
 			try {
-				await this.#sessionSwitchReconciler?.();
+				await this.#sessionSwitchReconciler?.("committed");
 			} catch (error) {
 				logger.warn("Failed to reconcile session mode after switch", {
 					targetSessionFile: sessionPath,
@@ -8676,7 +8676,7 @@ export class AgentSession {
 			this.#advisors.reattachRecorderFeeds();
 			this.#reconnectToAgent();
 			try {
-				await this.#sessionSwitchReconciler?.();
+				await this.#sessionSwitchReconciler?.("rolled-back");
 			} catch (reconcileError) {
 				logger.warn("Failed to reconcile session mode after switch rollback", {
 					targetSessionFile: sessionPath,
