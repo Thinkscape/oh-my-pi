@@ -1732,7 +1732,15 @@ export class InteractiveMode implements InteractiveModeContext {
 	}
 
 	async getUserInput(): Promise<SubmittedUserInput> {
-		await this.#waitForToolPresentationBeforeInput();
+		const submitWasDisabled = this.editor.disableSubmit;
+		this.editor.disableSubmit = true;
+		this.ui.requestRender();
+		try {
+			await this.#waitForToolPresentationBeforeInput();
+		} finally {
+			this.editor.disableSubmit = submitWasDisabled;
+			this.ui.requestRender();
+		}
 		const { promise, resolve } = Promise.withResolvers<SubmittedUserInput>();
 		this.onInputCallback = input => {
 			this.onInputCallback = undefined;

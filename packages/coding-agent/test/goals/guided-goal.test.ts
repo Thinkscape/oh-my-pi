@@ -412,18 +412,27 @@ describe("guided goal setup", () => {
 				toolsRestored.resolve();
 			});
 			const warning = vi.spyOn(harness.mode, "showWarning");
+			const prompt = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
 
 			await emitTerminalAgentEnd(harness);
 			expect(harness.session.getEnabledToolNames()).toEqual(expect.arrayContaining(["ask", "goal"]));
 			const input = harness.mode.getUserInput();
 			await scheduler.yield();
 			expect(harness.mode.onInputCallback).toBeUndefined();
+			expect(harness.mode.editor.disableSubmit).toBe(true);
+			harness.mode.editor.setText("next turn");
+			harness.mode.editor.handleInput("\r");
+			await scheduler.yield();
+			expect(prompt).not.toHaveBeenCalled();
+			expect(harness.mode.editor.getText()).toBe("next turn");
 			await toolsRestored.promise;
 			await scheduler.yield();
 
 			expect(warning).toHaveBeenCalled();
-			harness.mode.onInputCallback?.(harness.mode.startPendingSubmission({ text: "next turn" }));
-			await input;
+			expect(harness.mode.editor.disableSubmit).toBe(false);
+			harness.mode.editor.handleInput("\r");
+			expect(await input).toEqual(expect.objectContaining({ text: "next turn" }));
+			expect(prompt).not.toHaveBeenCalled();
 			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
 		} finally {
 			await harness.cleanup();
