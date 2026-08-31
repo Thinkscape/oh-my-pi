@@ -1872,10 +1872,23 @@ export class AgentSession {
 		this.#planProposalHandler = handler ?? undefined;
 	}
 
-	#sessionBeforeSwitchReconciler: (() => Promise<void>) | undefined;
+	#sessionBeforeSwitchReconciler: (() => Promise<boolean>) | undefined;
 
-	setSessionBeforeSwitchReconciler(reconciler: (() => Promise<void>) | null): void {
+	setSessionBeforeSwitchReconciler(reconciler: (() => Promise<boolean>) | null): void {
 		this.#sessionBeforeSwitchReconciler = reconciler ?? undefined;
+	}
+
+	async #reconcileBeforeSessionTransition(): Promise<boolean> {
+		try {
+			if ((await this.#sessionBeforeSwitchReconciler?.()) === false) {
+				this.#reconnectToAgent();
+				return false;
+			}
+			return true;
+		} catch (error) {
+			this.#reconnectToAgent();
+			throw error;
+		}
 	}
 
 	#sessionSwitchReconciler: (() => Promise<void>) | undefined;
@@ -7284,6 +7297,7 @@ export class AgentSession {
 		this.#disconnectFromAgent();
 		let advisorRecordersDetached = false;
 		await this.abort();
+		if (!(await this.#reconcileBeforeSessionTransition())) return false;
 		this.#cancelOwnAsyncJobs();
 		this.#closeAllProviderSessions("new session");
 		await this.#bash.flushPending();
@@ -8382,7 +8396,7 @@ export class AgentSession {
 
 		this.#disconnectFromAgent();
 		await this.abort({ goalReason: "internal" });
-		await this.#sessionBeforeSwitchReconciler?.();
+		if (!(await this.#reconcileBeforeSessionTransition())) return false;
 
 		await this.#bash.flushPending();
 		// Flush pending writes before switching so restore snapshots reflect committed state.
