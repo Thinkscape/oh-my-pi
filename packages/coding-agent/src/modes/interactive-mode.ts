@@ -244,6 +244,8 @@ import { UiHelpers } from "./utils/ui-helpers";
 
 const STILL_CLOSING_DELAY_MS = 3_000;
 const DEFAULT_WORKING_MESSAGE = "Working…";
+const TOOL_PRESENTATION_RETRY_INITIAL_DELAY_MS = 250;
+const TOOL_PRESENTATION_RETRY_MAX_DELAY_MS = 2_000;
 
 interface ToolPresentationSnapshot {
 	enabled: string[];
@@ -1705,19 +1707,32 @@ export class InteractiveMode implements InteractiveModeContext {
 		return true;
 	}
 
-	async getUserInput(): Promise<SubmittedUserInput> {
-		if (!(await this.#retryGuidedGoalInterviewSwitchRollback())) {
-			throw new Error("Cannot accept input until the guided goal interview is reactivated.");
-		}
+	async #restoreToolPresentationBeforeInput(): Promise<boolean> {
+		if (!(await this.#retryGuidedGoalInterviewSwitchRollback())) return false;
 		if (
 			(this.#guidedGoalInterview?.phase === "cleanup-failed" || this.#guidedGoalInterview?.phase === "restoring") &&
 			!(await this.#restoreGuidedGoalInterviewTools())
 		) {
-			throw new Error("Cannot accept input until the guided goal interview restores the previous tool set.");
+			return false;
 		}
-		if (!(await this.#retryPendingGoalModeExit())) {
-			throw new Error("Cannot accept input until goal mode restores the previous tool set.");
+		return await this.#retryPendingGoalModeExit();
+	}
+
+	async #waitForToolPresentationBeforeInput(): Promise<void> {
+		let retryDelay = TOOL_PRESENTATION_RETRY_INITIAL_DELAY_MS;
+		let warned = false;
+		while (!(await this.#restoreToolPresentationBeforeInput())) {
+			if (!warned) {
+				this.showWarning("Could not restore the previous tool set. Input is paused while retrying.");
+				warned = true;
+			}
+			await Bun.sleep(retryDelay);
+			retryDelay = Math.min(retryDelay * 2, TOOL_PRESENTATION_RETRY_MAX_DELAY_MS);
 		}
+	}
+
+	async getUserInput(): Promise<SubmittedUserInput> {
+		await this.#waitForToolPresentationBeforeInput();
 		const { promise, resolve } = Promise.withResolvers<SubmittedUserInput>();
 		this.onInputCallback = input => {
 			this.onInputCallback = undefined;
