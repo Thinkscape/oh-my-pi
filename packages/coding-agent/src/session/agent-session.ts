@@ -840,10 +840,10 @@ export class AgentSession {
 		// the still-old context (the transition hasn't reached agent.reset() yet), start a
 		// stale provider turn that races the reset, and — once reconnected — append its
 		// output to the fresh session (issue #5800). A disconnected session never owns the
-		// queue: the transition does. newSession/switchSession drop the queue (reset /
-		// clearAllQueues), so nothing survives; compaction preserves it and re-drains itself
-		// after #reconnectToAgent (see compact()'s finally); an explicit prompt flushes it
-		// in every case.
+		// queue: successful newSession/switchSession transitions drop it (reset /
+		// clearAllQueues), while cancelled transitions reconnect and explicitly re-drain it.
+		// Compaction preserves it and re-drains itself after #reconnectToAgent (see
+		// compact()'s finally); an explicit prompt flushes it in every case.
 		if (this.#unsubscribeAgent === undefined) return;
 		// A concern steered into a resumed streaming run after a user interrupt can
 		// strand at the turn tail (steered past the loop's final boundary poll). While
@@ -1878,15 +1878,20 @@ export class AgentSession {
 		this.#sessionBeforeSwitchReconciler = reconciler ?? undefined;
 	}
 
+	#resumeAfterCancelledSessionTransition(): void {
+		this.#reconnectToAgent();
+		this.#drainStrandedQueuedMessages();
+	}
+
 	async #reconcileBeforeSessionTransition(reason: "new" | "resume"): Promise<boolean> {
 		try {
 			if ((await this.#sessionBeforeSwitchReconciler?.(reason)) === false) {
-				this.#reconnectToAgent();
+				this.#resumeAfterCancelledSessionTransition();
 				return false;
 			}
 			return true;
 		} catch (error) {
-			this.#reconnectToAgent();
+			this.#resumeAfterCancelledSessionTransition();
 			throw error;
 		}
 	}

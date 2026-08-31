@@ -508,8 +508,24 @@ describe("guided goal setup", () => {
 			await harness.mode.init();
 			const previousTools = harness.session.getEnabledToolNames();
 			const previousSessionId = harness.session.sessionId;
+			harness.session.agent.appendMessage({
+				role: "assistant",
+				content: [{ type: "text", text: "Previous turn." }],
+				api: "anthropic-messages",
+				provider: "anthropic",
+				model: "claude-sonnet-4-5",
+				stopReason: "stop",
+				usage: {
+					input: 1,
+					output: 1,
+					cacheRead: 0,
+					cacheWrite: 0,
+					totalTokens: 2,
+					cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+				},
+				timestamp: Date.now(),
+			});
 			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => true });
-			vi.spyOn(harness.session, "followUp").mockResolvedValue();
 			await harness.mode.handleGuidedGoalCommand("ship it");
 			Object.defineProperty(harness.session, "isStreaming", { configurable: true, get: () => false });
 
@@ -517,8 +533,15 @@ describe("guided goal setup", () => {
 			vi.spyOn(harness.session, "setActiveToolPresentation")
 				.mockRejectedValueOnce(new Error("transient restore failure"))
 				.mockImplementation(setActiveTools);
+			const queuedKickoffDrained = Promise.withResolvers<void>();
+			const continueSpy = vi.spyOn(harness.session.agent, "continue").mockImplementation(async () => {
+				harness.session.agent.clearAllQueues();
+				queuedKickoffDrained.resolve();
+			});
 
 			expect(await harness.session.newSession()).toBe(false);
+			await queuedKickoffDrained.promise;
+			expect(continueSpy).toHaveBeenCalledTimes(1);
 			expect(harness.session.sessionId).toBe(previousSessionId);
 			expect(harness.session.getEnabledToolNames()).toEqual(expect.arrayContaining(["ask", "goal"]));
 
