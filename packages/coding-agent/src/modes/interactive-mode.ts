@@ -5107,6 +5107,9 @@ export class InteractiveMode implements InteractiveModeContext {
 
 	/** Shared `shutdown()`/`restart()` teardown: dispose the session and hand the terminal back. */
 	async #teardown(): Promise<void> {
+		if (this.#guidedGoalInterview?.phase === "dispatching") {
+			await this.session.abort();
+		}
 		await this.#restoreGuidedGoalInterviewTools();
 		await this.#retryPendingGoalModeExit(true);
 		await this.#liveCommandController.stop();

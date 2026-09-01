@@ -654,6 +654,40 @@ describe("guided goal setup", () => {
 		}
 	});
 
+	it("aborts a dispatching interview before shutdown restores its tools", async () => {
+		const harness = await createHarness();
+		const promptStarted = Promise.withResolvers<void>();
+		const releasePrompt = Promise.withResolvers<void>();
+		let shutdown: Promise<void> | undefined;
+		try {
+			await harness.mode.init();
+			harness.mode.ui.terminal.drainInput = async () => {};
+			const quit = vi.spyOn(postmortem, "quit").mockResolvedValue(undefined);
+			vi.spyOn(harness.session, "prompt").mockImplementation(async () => {
+				promptStarted.resolve();
+				await releasePrompt.promise;
+				return true;
+			});
+			const abort = vi.spyOn(harness.session, "abort").mockImplementation(async () => {
+				releasePrompt.resolve();
+			});
+
+			const interview = harness.mode.handleGuidedGoalCommand("ship it");
+			await promptStarted.promise;
+			shutdown = harness.mode.shutdown();
+			await scheduler.yield();
+
+			expect(abort).toHaveBeenCalledTimes(1);
+			await shutdown;
+			await interview;
+			expect(quit).toHaveBeenCalledWith(0);
+		} finally {
+			releasePrompt.resolve();
+			await shutdown;
+			await harness.cleanup();
+		}
+	});
+
 	it("clears a completed goal during shutdown after repeated restore failures", async () => {
 		const harness = await createHarness();
 		try {
