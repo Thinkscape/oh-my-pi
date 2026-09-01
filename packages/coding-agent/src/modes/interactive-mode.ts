@@ -4425,10 +4425,12 @@ export class InteractiveMode implements InteractiveModeContext {
 				return false;
 			}
 
-			// The interview cannot obey its ask-only contract when the tool was
-			// excluded by settings or the session's explicit tool set.
-			if (!this.session.settings.get("ask.enabled") || !this.session.getToolByName("ask")) {
-				this.showWarning("The guided goal interview requires the ask tool, but it is unavailable in this session.");
+			// The interview cannot obey its ask-only contract when the built-in
+			// tool was disabled, excluded, or replaced by an extension.
+			if (!this.session.settings.get("ask.enabled") || !this.session.hasBuiltInTool("ask")) {
+				this.showWarning(
+					"The guided goal interview requires the built-in ask tool, but it is unavailable in this session.",
+				);
 				return false;
 			}
 
@@ -4450,6 +4452,8 @@ export class InteractiveMode implements InteractiveModeContext {
 			if (
 				!this.session.settings.get("ask.enabled") ||
 				!this.session.settings.get("goal.enabled") ||
+				!this.session.hasBuiltInTool("ask") ||
+				!this.session.hasBuiltInTool("goal") ||
 				!this.session.getToolForEvalBridge("ask") ||
 				!this.session.getToolForEvalBridge("goal") ||
 				!activatedTools.includes("ask") ||

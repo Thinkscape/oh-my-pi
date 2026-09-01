@@ -74,6 +74,9 @@ async function createHarness(options?: {
 		rebuildSystemPrompt: async () => ({ systemPrompt: ["Test"] }),
 		ensureGoalRegistered: options?.goalAvailable === false ? async () => false : undefined,
 	});
+	for (const tool of availableTools) {
+		session.setToolBuiltIn(tool.name, true);
+	}
 	// Mirror sdk.ts assembly: the goal tool is pre-registered (hidden) whenever
 	// goal.enabled, so /guided-goal can activate it by name for the interview.
 	const goalToolSession = createToolSession(tempDir.path(), settings, {
@@ -83,6 +86,7 @@ async function createHarness(options?: {
 	const goalTool = new GoalTool(goalToolSession);
 	if (options?.goalAvailable !== false) {
 		toolRegistry.set("goal", goalTool as unknown as Tool);
+		session.setToolBuiltIn("goal", true);
 	}
 	const mode = new InteractiveMode(session, "test");
 	vi.spyOn(mode, "addMessageToChat").mockReturnValue([]);
@@ -169,6 +173,40 @@ describe("guided goal setup", () => {
 			expect(started).toBe(false);
 			expect(promptSpy).not.toHaveBeenCalled();
 			expect(harness.session.getEnabledToolNames()).not.toContain("goal");
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("refuses to start when an extension replaces the built-in ask tool", async () => {
+		const harness = await createHarness();
+		try {
+			harness.session.setToolBuiltIn("ask", false);
+			const previousTools = harness.session.getEnabledToolNames();
+			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+
+			const started = await harness.mode.handleGuidedGoalCommand("ship it");
+
+			expect(started).toBe(false);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("rolls back when an extension replaces the built-in goal tool", async () => {
+		const harness = await createHarness();
+		try {
+			harness.session.setToolBuiltIn("goal", false);
+			const previousTools = harness.session.getEnabledToolNames();
+			const promptSpy = vi.spyOn(harness.session, "prompt").mockResolvedValue(true);
+
+			const started = await harness.mode.handleGuidedGoalCommand("ship it");
+
+			expect(started).toBe(false);
+			expect(promptSpy).not.toHaveBeenCalled();
+			expect(harness.session.getEnabledToolNames()).toEqual(previousTools);
 		} finally {
 			await harness.cleanup();
 		}
